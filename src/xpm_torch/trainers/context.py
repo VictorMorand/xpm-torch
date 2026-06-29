@@ -201,6 +201,10 @@ class TrainerContext(Context):
         self._scope = []
         self._losses = None
         self.fabric = fabric
+        self.current_relevances: Optional[torch.Tensor] = None
+        """Relevance matrix for the current batch, set by the trainer before
+        calling the model so that hooks can access it.
+        Shape: (n_queries, n_documents); non-zero = relevant."""
 
         self.state = TrainState(model, trainer, optimizer)
 
