@@ -143,7 +143,7 @@ class Learner(Task, EasyLogger):
     """Listeners are in charge of handling the validation of the model, and
     saving the relevant checkpoints"""
 
-    checkpoint_interval: Param[int] = field(default=1, ignore_default=True)
+    checkpoint_interval: Meta[int] = field(default=1, ignore_default=True)
     """Number of epochs between each checkpoint"""
 
     logpath: Annotated[Path, pathgenerator("runs")]
@@ -158,7 +158,7 @@ class Learner(Task, EasyLogger):
     :class:`Initialization hooks <xpm_torch.context.InitializationHook>` are called
     before and after the initialization of the trainer and listeners.
     """
-    
+
     fabric_config: Param[FabricConfiguration] = field(default_factory=FabricConfiguration.C)
     """Runtime configuration, managed by Fabric"""
 
@@ -210,7 +210,7 @@ class Learner(Task, EasyLogger):
 
         The training process is stopped either by the listeners
         or when max_epoch is reached.
-        """        
+        """
 
         # 1. Launch Fabric
         fabric = self.fabric_config.get_fabric()
@@ -219,7 +219,7 @@ class Learner(Task, EasyLogger):
         self.optimizer = ScheduledOptimizer()
 
         self.only_cached = False
-        
+
         self.context = TrainerContext(
             self.logpath,
             self.checkpointspath,
@@ -260,7 +260,7 @@ class Learner(Task, EasyLogger):
         for listener in self.listeners:
             listener.initialize(self, self.context)
 
-        
+
 
         num_training_steps = self.max_epochs * self.steps_per_epoch
 
@@ -272,6 +272,11 @@ class Learner(Task, EasyLogger):
             hooks=[hook for hook in self.hooks if isinstance(hook, OptimizationHook)],
             trainer_context=self.context,
         )
+
+        # Trainer hook for one-time setup that needs the model on the device but
+        # NOT yet DDP-wrapped (e.g. predictive batcher probing on rank 0). Must
+        # run after the optimizer is initialized and before fabric.setup(model).
+        self.trainer.pre_train_setup(fabric)
 
         # wrap model and optimizers
         self.model, *self.optimizer.optimizers = fabric.setup(
@@ -414,11 +419,11 @@ class Learner(Task, EasyLogger):
 
                     for hook in self.context.hooks(StepTrainingHook):
                         hook.after(self.context)
-                
+
                 metrics.add(
                     ScalarMetric("iter_per_seconds", self.steps_per_epoch / (perf_counter() - start), 1)
                 )
-                # Yields the current state (after one epoch) 
+                # Yields the current state (after one epoch)
                 # -> allows listeners to process it and decide whether to stop or not
                 yield self.context.state
 

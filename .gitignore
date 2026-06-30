@@ -101,5 +101,8 @@ venv.bak/
 # mypy
 .mypy_cache/
 .vscode/
-src/xpmir/_version.py
+src/xpm_torch/version.py
 .DS_Store
+
+# CodeGraph local index
+.codegraph/

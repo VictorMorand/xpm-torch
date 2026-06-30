@@ -9,6 +9,7 @@ import torch
 import logging
 import torch.nn as nn
 from experimaestro import (
+    field,
     Config,
     DataPath,
     Param,
@@ -65,17 +66,39 @@ class Module(Config, Initializable, nn.Module):
     def device(self):
         return next(self.parameters()).device
 
+    def count_parameters(self):
+        """Count the number of parameters in the model"""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def get_forward_methods(self) -> list:
+        """Returns the list of forward methods for this scorer. Needed to set up Fabric with multiple forward methods.
+        By default, it is just `forward`, but it can be extended to support multiple forward methods (e.g. for different scoring strategies)"""
+        return []
+
     def save_model(self, path: Path):
-        """Save model parameters to a directory using safetensors."""
+        """Save model parameters to a directory or a file using safetensors.
+
+        If the path ends with .safetensors, it saves directly to that file.
+        Otherwise, it creates a directory and saves as 'model.safetensors' inside.
+        """
         from safetensors.torch import save_file
-        path.mkdir(parents=True, exist_ok=True)
-        save_file(self.state_dict(), str(path / "model.safetensors"))
+        if path.suffix == ".safetensors":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            save_file(self.state_dict(), str(path))
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+            save_file(self.state_dict(), str(path / "model.safetensors"))
 
     def load_model(self, path: Path):
-        """Load model parameters from a directory."""
+        """Load model parameters from a directory or a file."""
         from safetensors.torch import load_file
 
-        self.load_state_dict(load_file(str(path / "model.safetensors")))
+        if path.is_file():
+            self.load_state_dict(load_file(str(path)))
+        elif (path / "model.safetensors").exists():
+            self.load_state_dict(load_file(str(path / "model.safetensors")))
+        else:
+            raise FileNotFoundError(f"Could not find model weights at {path}")
 
     def loader_config(
         self, path: Path, *, settings: Optional[Config] = None
@@ -194,7 +217,7 @@ class ModuleLoader(SerializationLWTask):
     The model config is accessible via :attr:`model` (alias for ``value``).
     """
 
-    settings: Param[Optional[Config]] = None
+    settings: Param[Optional[Config]] = field(default=None, ignore_default=True)
     """Optional metadata (validation info, checkpoint epoch, etc.)"""
 
     @property
@@ -212,7 +235,8 @@ class ModuleLoader(SerializationLWTask):
         Args:
             save_directory: The Hub export directory.
         """
-        pass
+        if hasattr(self.model, "write_hub_extras"):
+            self.model.write_hub_extras(save_directory)
 
     def hub_readme_sections(self) -> List[ReadmeSection]:
         """Return additional sections for the HF Hub README.
@@ -224,6 +248,8 @@ class ModuleLoader(SerializationLWTask):
 
         Override in subclasses to provide model-specific content.
         """
+        if hasattr(self.model, "hub_readme_sections"):
+            return self.model.hub_readme_sections()
         return []
 
     def execute(self):
@@ -234,17 +260,37 @@ class SimpleModuleLoader(ModuleLoader):
     """Default ModuleLoader with a single ``path`` DataPath.
 
     Loads model weights from a checkpoint directory containing either
-    a ``model/`` subdirectory (safetensors) or a ``model.pth`` file.
+    a ``model/`` subdirectory (safetensors) or a ``model.safetensors`` file.
     """
 
     path: DataPath
     """Path to the checkpoint directory"""
 
+    def __xpm_serialize__(self, context):
+        """Serialize the path directly to model.safetensors at the root"""
+        path = Path(self.path)
+
+        # Ensure path exists and is not the current directory (resolved from empty string)
+        if not path.exists() or path.resolve() == Path.cwd().resolve():
+            raise FileNotFoundError(f"Cannot serialize SimpleModuleLoader: path '{self.path}' does not exist or is the current directory")
+
+        # If it's a directory, point to the file inside it so it gets
+        # serialized as a file instead of a directory
+        if path.is_dir() and (path / "model.safetensors").exists():
+            path = path / "model.safetensors"
+
+        # Serialize the 'path' field under the name "model.safetensors"
+        return {"path": context.serialize(
+            context.var_path + ["model.safetensors"], path, self
+        )}
+
     def execute(self):
         """Loads the model from disk using the given serialization path"""
-        self.value.initialize()
         path = Path(self.path)
         logger.info("Loading model from disk: %s", path)
+        # Build the module structure first so its parameters are registered,
+        # then load the weights into it (load_model calls load_state_dict).
+        self.value.initialize()
         self.value.load_model(path)
 
 
@@ -288,6 +334,7 @@ class ModuleContainer(nn.Module):
         """
         Self-identifies which children need Fabric wrapping.
         """
+        self.fabric = fabric
         modules_to_wrap = self.get_manageable_modules()
 
         if not modules_to_wrap:
@@ -297,8 +344,12 @@ class ModuleContainer(nn.Module):
         for name, module in modules_to_wrap.items():
             # Wrap the module and re-assign it
             wrapped = fabric.setup(module)
+
+            for method_name in module.get_forward_methods():
+                wrapped.mark_forward_method(method_name)
+
             setattr(self, name, wrapped)
-            logger.debug(f"Registered {name} (type: {type(module).__name__}) with Fabric on {fabric.device}")
+            logger.info(f"Registered {name} (type: {type(module).__name__}) with Fabric on {fabric.device}")
 
 
 def find_module_attributes(obj) -> dict:
@@ -315,4 +366,3 @@ def find_module_attributes(obj) -> dict:
             found_modules[attr_name] = attr_value
 
     return found_modules
-

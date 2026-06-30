@@ -9,7 +9,6 @@ from typing import (
     Iterable,
     Tuple,
     Type,
-    Optional,
 )
 import inspect
 import logging
@@ -125,11 +124,32 @@ class Handler:
 
 
 
-def to_device(tensor: Optional[torch.Tensor], device: torch.device):
-    """Move to device if not None"""
-    if tensor is not None:
-        return tensor.to(device)
-    return tensor
+def to_device(obj, device: Union[torch.device, str]):
+    """Move tensors to device recursively. Handles nested structures.
+
+    Args:
+        obj: A tensor, dict, list, tuple, or nested combination
+        device: Target device (e.g., 'cpu', torch.device('cuda'))
+
+    Returns:
+        Object with all tensors moved to the specified device
+    """
+    if obj is None:
+        return None
+    elif isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    elif hasattr(obj, "to") and callable(obj.to):
+        return obj.to(device)
+    elif isinstance(obj, dict):
+        return {k: to_device(v, device) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        # Handle NamedTuples (which have _fields)
+        if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+            return type(obj)(*(to_device(v, device) for v in obj))
+        return type(obj)(to_device(v, device) for v in obj)
+    else:
+        # For other types, return as-is
+        return obj
 
 
 def foreach(iterator: Iterable[T], fn: Callable[[T], None]):

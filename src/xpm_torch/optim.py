@@ -8,6 +8,7 @@ import re
 from experimaestro import (
     Config,
     Param,
+    Constant,
     tagspath,
     Task,
     experiment,
@@ -236,8 +237,17 @@ class GradientClippingHook(GradientHook):
     max_norm: Param[float]
     """Maximum norm for gradient clipping"""
 
+    version: Constant[str] = "1"
+    """version of the Hook"""
+
     def __call__(self, main: "ScheduledOptimizer"):
-        torch.nn.utils.clip_grad_norm_(main.module.parameters(), self.max_norm)
+        # torch.nn.utils.clip_grad_norm_(main.module.parameters(), self.max_norm)
+        for optimizer in main.optimizers:
+            main.trainer_context.fabric.clip_gradients(
+                main.module,
+                optimizer,
+                max_norm=self.max_norm
+                )
 
 
 class GradientLogHook(GradientHook):
