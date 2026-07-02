@@ -67,31 +67,43 @@ def check_hf_cache(model_id: str, is_model: bool = True) -> bool:
     Returns:
         True if the model or tokenizer is already downloaded, False otherwise.
     """
-    model_files = [
-        "config.json",
-        "pytorch_model.bin",
-        "tf_model.h5",
-        "model.safetensors",
-    ]
-    tokenizer_files = [
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.json",
-        "merges.txt",
-    ]
-
-    files_to_check = model_files if is_model else tokenizer_files
-
-    for filename in files_to_check:
+    if is_model:
+        # We need both the config and the weights to be present in the cache
         try:
             hf_hub_download(
-                repo_id=model_id, filename=filename, local_files_only=True
+                repo_id=model_id, filename="config.json", local_files_only=True
             )
-            return True
-        except (EntryNotFoundError, RepositoryNotFoundError):
-            continue
+        except Exception:
+            return False
 
-    return False
+        weights_files = ["pytorch_model.bin", "model.safetensors", "tf_model.h5"]
+        for filename in weights_files:
+            try:
+                hf_hub_download(
+                    repo_id=model_id, filename=filename, local_files_only=True
+                )
+                return True
+            except Exception:
+                continue
+        return False
+    else:
+        tokenizer_files = [
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.txt",
+            "vocab.json",
+            "spiece.model",
+            "merges.txt",
+        ]
+        for filename in tokenizer_files:
+            try:
+                hf_hub_download(
+                    repo_id=model_id, filename=filename, local_files_only=True
+                )
+                return True
+            except Exception:
+                continue
+        return False
 
 
 def get_hf_config(repo_id: str) -> dict:
